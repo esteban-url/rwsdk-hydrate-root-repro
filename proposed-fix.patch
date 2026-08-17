@@ -1,0 +1,83 @@
+Proposed fix, against redwoodjs/sdk @ v1.7.2
+File: sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
+
+`<style>` and `<title>` are the only hoistable tags with textual content,
+and per the HTML spec both are RAWTEXT/RCDATA elements: a browser never
+treats `<` inside their content as a tag start until the matching close
+tag arrives. `splitStreamOnFirstNonHoistedTag`'s scanner needs to know
+that too — this patch tracks whether it's currently inside an unclosed
+<style>/<title>, and while it is, skips straight to that element's close
+tag instead of testing its content against `nonHoistedTagPattern`.
+
+Caveat: this closes the reported case (complete <style>/<title> element
+content arriving in one evaluation), but a <style ...> open tag itself
+split mid-attribute across a chunk boundary is a narrower residual edge
+case — same class of streaming-boundary problem MIN_TRAILING_CONTEXT
+already exists to guard against for hoistable tag *names*, just not yet
+extended to this new raw-text-open detection.
+
+--- a/sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
++++ b/sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
+@@ -22,6 +22,13 @@ function splitStreamOnFirstNonHoistedTag(
+   const nonHoistedTagPattern =
+     /<(?!(?:\/)?(?:title|meta|link|style|base)[\s>\/])(?![!?])/i;
+
++  // `style` and `title` are RAWTEXT/RCDATA elements per the HTML spec: a
++  // browser never interprets `<` inside their content as a tag start until
++  // the matching close tag arrives. This scanner must match that behavior —
++  // a `<html>`-shaped substring inside a <style> comment or <title> text is
++  // NOT a real tag boundary and must not be treated as one.
++  const rawTextOpenPattern = /<(style|title)(?=[\s>/])[^>]*>/i;
++  let openRawTextTag: string | null = null;
++
+   // Longest hoistable name is 5 chars (title/style); a match candidate at
+   // index i needs buffer[i..] to have at least 1 (optional "/") + 5 (name)
+   // + 1 (terminating char) = 7 chars of context past "<" before it can be
+@@ -32,13 +39,38 @@ function splitStreamOnFirstNonHoistedTag(
+     buf: string,
+     streamDone: boolean,
+   ): RegExpMatchArray | null {
+-    const match = buf.match(nonHoistedTagPattern);
+-    if (!match || typeof match.index !== "number") return null;
+-    if (streamDone) return match; // no more data coming; trust it
+-    // buf.length - match.index counts the "<" itself, so subtract 1 to
+-    // get the number of confirmed characters *after* it.
+-    if (buf.length - match.index - 1 < MIN_TRAILING_CONTEXT) return null; // ambiguous, wait for more data
+-    return match;
++    let searchFrom = 0;
++
++    while (true) {
++      if (openRawTextTag) {
++        const closeIdx = buf.indexOf(`</${openRawTextTag}`, searchFrom);
++        if (closeIdx === -1) return null; // still inside raw text, wait for more
++        openRawTextTag = null;
++        searchFrom = closeIdx; // resume normal scanning at the close tag
++        continue;
++      }
++
++      const rest = buf.slice(searchFrom);
++      const boundary = rest.match(nonHoistedTagPattern);
++      const rawTextOpen = rest.match(rawTextOpenPattern);
++
++      // Whichever comes first in the buffer wins.
++      if (
++        rawTextOpen &&
++        typeof rawTextOpen.index === "number" &&
++        (!boundary ||
++          typeof boundary.index !== "number" ||
++          rawTextOpen.index <= boundary.index)
++      ) {
++        openRawTextTag = rawTextOpen[1].toLowerCase();
++        searchFrom += rawTextOpen.index + rawTextOpen[0].length;
++        continue;
++      }
++
++      if (!boundary || typeof boundary.index !== "number") return null;
++      const index = searchFrom + boundary.index;
++      if (streamDone) return { 0: buf[index], index } as RegExpMatchArray;
++      // buf.length - index counts the "<" itself, so subtract 1 to get the
++      // number of confirmed characters *after* it.
++      if (buf.length - index - 1 < MIN_TRAILING_CONTEXT) return null; // ambiguous, wait for more data
++      return { 0: buf[index], index } as RegExpMatchArray;
++    }
+   }

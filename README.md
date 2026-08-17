@@ -125,6 +125,10 @@ element" instead of `<html>`) — the page hydrates normally. See
 `src/app/pages/home.tsx`.
 
 The durable fix belongs in `rwsdk` itself: `splitStreamOnFirstNonHoistedTag`
-needs to be parse-aware — at minimum, tracking `<style>`/`<script>`
+needs to be parse-aware — at minimum, tracking `<style>`/`<title>`
 open/close state and skipping their raw-text contents — rather than
 pattern-matching `<` characters anywhere in the byte stream.
+
+See [`proposed-fix.patch`](./proposed-fix.patch) for a concrete patch
+against `sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts` (`v1.7.2`)
+that does this.
