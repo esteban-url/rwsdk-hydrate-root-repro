@@ -2,8 +2,17 @@
 
 Minimal repro for a bug in `rwsdk`'s SSR stream stitcher: a code comment
 inside a `<style>` block that happens to contain a bare `<html>` (as prose,
-not markup) corrupts the entire SSR response, and client hydration fails
-with:
+not markup) corrupts the entire SSR response, and client hydration fails.
+
+100% deterministic — no timing, network, or browser dependency. Confirmed
+against `rwsdk@1.7.2`.
+
+### Two observed failure modes — same root cause
+
+Which error you see depends only on the incidental order of operations
+inside `rwsdk/client`'s `initClient()`, not on anything environment-specific:
+
+**A) The hydrate-root check runs first:**
 
 ```
 RedwoodSDK: No element with id "hydrate-root" found in the document. This
@@ -11,8 +20,40 @@ element is required for hydration. Ensure your Document component contains
 a {children}.
 ```
 
-100% deterministic — no timing, network, or browser dependency. Confirmed
-against `rwsdk@1.7.2`.
+**B) A client-reference chunk needs resolving first:**
+
+```
+Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'u')
+```
+
+This second one happens because the SAME corrupted fragment that swallows
+`<div id="hydrate-root">` also swallows the inline script immediately
+before it:
+
+```html
+<script nonce="...">
+  globalThis.__RWSDK_CONTEXT = {"rw":{"ssr":true}};
+  if (!globalThis.__webpack_require__) {
+    globalThis.__webpack_require__ = function (id) { throw new Error(...) };
+    globalThis.__webpack_require__.u = function () {};
+  }
+</script><div id="hydrate-root">...
+```
+
+Both the `__RWSDK_CONTEXT` script and the `hydrate-root` div land as inert
+text inside the `<style>` tag (see below), so neither becomes a real
+DOM/script element. `globalThis.__webpack_require__` is therefore never
+assigned its fallback stub. When `client.tsx`'s RSC payload deserializer
+(`createFromReadableStream`, via `react-server-dom-webpack`) needs to
+resolve a chunk URL for a client reference, it calls
+`__webpack_require__.u(...)` on `undefined` — hence "Cannot read properties
+of undefined (reading 'u')". This can throw *before* execution ever reaches
+the `getElementById("hydrate-root")` check, depending on whether the page's
+RSC payload has a client reference to resolve at that point.
+
+Both failure modes are downstream of the exact same stream corruption —
+they just surface at different points in the same client bootstrap
+sequence.
 
 ## Root cause
 
