@@ -1,32 +1,19 @@
 Proposed fix, against redwoodjs/sdk @ v1.7.2
 File: sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
 
-`<style>` and `<title>` are the only hoistable tags with textual content,
-and per the HTML spec both are RAWTEXT/RCDATA elements: a browser never
-treats `<` inside their content as a tag start until the matching close
-tag arrives. `splitStreamOnFirstNonHoistedTag`'s scanner needs to know
-that too — this patch tracks whether it's currently inside an unclosed
-<style>/<title>, and while it is, skips straight to that element's close
-tag instead of testing its content against `nonHoistedTagPattern`.
+`<style>`/`<title>` are RAWTEXT/RCDATA per the HTML spec — a browser never
+treats `<` inside them as a tag start until the matching close tag. This
+patch tracks whether the scanner is inside an unclosed <style>/<title> and,
+while it is, skips straight to that element's close tag instead of testing
+its content against `nonHoistedTagPattern`.
 
-NOT a complete fix for the underlying bug class — see README.md's
-"The patch is not a complete fix for the underlying class of bug" section.
-Two caveats:
-
-1. This closes the reported case (complete <style>/<title> element content
-   arriving in one evaluation), but a <style ...> open tag itself split
-   mid-attribute across a chunk boundary is a narrower residual edge case —
-   same class of streaming-boundary problem MIN_TRAILING_CONTEXT already
-   exists to guard against for hoistable tag *names*, just not yet extended
-   to this new raw-text-open detection.
-
-2. The scanner still has no concept of "inside a quoted attribute value."
-   A fully legitimate, hoistable tag like `<meta content="<div>" />` still
-   trips the same false-positive category this patch is meant to fix,
-   just via a different trigger. Closing that needs either extending this
-   same tokenizer further, or classifying hoistable tags at the React
-   element level instead of scanning rendered HTML text at all (see
-   README.md for the tradeoffs).
+NOT a complete fix for the bug class (see README.md): a quoted attribute
+value on a legitimate hoistable tag has the same gap, e.g.
+`<meta content="<div>" />` still trips the false positive, just via a
+different trigger. Closing that needs either extending this same state
+machine to also track "inside a quoted attribute," or classifying
+hoistable tags at the React element level instead of scanning rendered
+text at all.
 
 --- a/sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
 +++ b/sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts
