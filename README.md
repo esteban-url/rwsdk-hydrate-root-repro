@@ -132,3 +132,41 @@ pattern-matching `<` characters anywhere in the byte stream.
 See [`proposed-fix.patch`](./proposed-fix.patch) for a concrete patch
 against `sdk/src/runtime/lib/stitchDocumentAndAppStreams.ts` (`v1.7.2`)
 that does this.
+
+### The patch is not a complete fix for the underlying class of bug
+
+The patch closes this specific report (tag-like text inside `<style>`/
+`<title>` RAWTEXT content), but the scanner has no concept of "inside a
+quoted attribute value" either. The same false-positive category is
+reachable through a *fully legitimate, hoistable* tag:
+
+```html
+<meta name="x" content="<div>" />
+```
+
+`<div>` inside that quoted attribute value matches `nonHoistedTagPattern`
+exactly as falsely as `<html>` did inside the `<style>` comment — verified
+against the actual regex, not hypothetical. The patch here doesn't touch
+this case.
+
+The root problem is that `splitStreamOnFirstNonHoistedTag` does no real
+tokenization — it regex-matches raw bytes with no concept of "inside a
+tag," "inside a quoted attribute," or "inside RAWTEXT content." Closing
+the whole class needs one of:
+
+1. **Extend the tokenizer further** — also track "inside a quoted
+   attribute value" state, not just RAWTEXT open/close. Same file, same
+   architecture, more code.
+2. **Classify hoistable tags at the React element level instead** — walk
+   the component tree for `title`/`meta`/`link`/`style`/`base` elements
+   (at any depth) before rendering to HTML, instead of reverse-engineering
+   tag boundaries from a byte stream after the fact. This is what React's
+   own client-side Float/hoisting does, and would eliminate the entire bug
+   category by construction. Bigger architectural change — the file's own
+   comment says this stream-stitching approach exists to solve a
+   Suspense/streaming race condition, so there may be a real constraint
+   pushing toward text-level stitching over two independently-rendered
+   trees that's not visible from outside the codebase.
+
+This patch is offered as *a* fix for the reported bug, not *the* fix for
+the bug class — scope is a maintainer call.
